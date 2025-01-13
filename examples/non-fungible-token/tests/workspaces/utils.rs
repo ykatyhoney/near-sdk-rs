@@ -1,9 +1,12 @@
+use std::str::FromStr;
+
 use near_contract_standards::non_fungible_token::metadata::TokenMetadata;
 use near_contract_standards::non_fungible_token::TokenId;
 
-use near_units::parse_near;
-use workspaces::{Account, Contract, DevNetwork, Worker};
-
+use near_workspaces::types::NearToken;
+use near_workspaces::{Account, Contract};
+use rstest::fixture;
+use near_workspaces::cargo_near_build;
 pub const TOKEN_ID: &str = "0";
 
 pub async fn helper_mint(
@@ -30,7 +33,7 @@ pub async fn helper_mint(
         .call("nft_mint")
         .args_json((token_id, nft_contract.id(), token_metadata))
         .max_gas()
-        .deposit(parse_near!("7 mN"))
+        .deposit(NearToken::from_millinear(7))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -38,16 +41,52 @@ pub async fn helper_mint(
     Ok(())
 }
 
+fn build_contract(path: &str, contract_name: &str) -> Vec<u8> {
+    let artifact = cargo_near_build::build(cargo_near_build::BuildOpts {
+        manifest_path: Some(
+            cargo_near_build::camino::Utf8PathBuf::from_str(path).expect("camino PathBuf from str"),
+        ),
+        ..Default::default()
+    })
+    .expect(&format!("building `{}` contract for tests", contract_name));
+
+    let contract_wasm = std::fs::read(&artifact.path)
+        .map_err(|err| format!("accessing {} to read wasm contents: {}", artifact.path, err))
+        .expect("std::fs::read");
+    contract_wasm
+}
+
+#[fixture]
+#[once]
+fn non_fungible_contract_wasm() -> Vec<u8> {
+    build_contract("./nft/Cargo.toml", "non-fungible-token")
+}
+
+#[fixture]
+#[once]
+fn token_receiver_contract_wasm() -> Vec<u8> {
+    build_contract("./test-token-receiver/Cargo.toml", "token-receiver")
+}
+
+#[fixture]
+#[once]
+fn approval_receiver_contract_wasm() -> Vec<u8> {
+    build_contract("./test-approval-receiver/Cargo.toml", "approval-receiver")
+}
+
 /// Deploy and initialize contracts and return:
 /// * nft_contract: the NFT contract, callable with `call!` and `view!`
 /// * alice: a user account, does not yet own any tokens
 /// * token_receiver_contract: a contract implementing `nft_on_transfer` for use with `transfer_and_call`
 /// * approval_receiver_contract: a contract implementing `nft_on_approve` for use with `nft_approve`
-pub async fn init(
-    worker: &Worker<impl DevNetwork>,
+#[fixture]
+pub async fn initialized_contracts(
+    non_fungible_contract_wasm: &Vec<u8>,
+    token_receiver_contract_wasm: &Vec<u8>,
+    approval_receiver_contract_wasm: &Vec<u8>,
 ) -> anyhow::Result<(Contract, Account, Contract, Contract)> {
-    let nft_contract =
-        worker.dev_deploy(include_bytes!("../../res/non_fungible_token.wasm")).await?;
+    let worker = near_workspaces::sandbox().await?;
+    let nft_contract = worker.dev_deploy(non_fungible_contract_wasm).await?;
 
     let res = nft_contract
         .call("new_default_meta")
@@ -75,7 +114,7 @@ pub async fn init(
         .call("nft_mint")
         .args_json((TOKEN_ID, nft_contract.id(), token_metadata))
         .max_gas()
-        .deposit(parse_near!("7 mN"))
+        .deposit(NearToken::from_millinear(7))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -83,14 +122,13 @@ pub async fn init(
     let res = nft_contract
         .as_account()
         .create_subaccount("alice")
-        .initial_balance(parse_near!("10 N"))
+        .initial_balance(NearToken::from_near(10))
         .transact()
         .await?;
     assert!(res.is_success());
     let alice = res.result;
 
-    let token_receiver_contract =
-        worker.dev_deploy(include_bytes!("../../res/token_receiver.wasm")).await?;
+    let token_receiver_contract = worker.dev_deploy(token_receiver_contract_wasm).await?;
     let res = token_receiver_contract
         .call("new")
         .args_json((nft_contract.id(),))
@@ -99,8 +137,7 @@ pub async fn init(
         .await?;
     assert!(res.is_success());
 
-    let approval_receiver_contract =
-        worker.dev_deploy(include_bytes!("../../res/approval_receiver.wasm")).await?;
+    let approval_receiver_contract = worker.dev_deploy(approval_receiver_contract_wasm).await?;
     let res = approval_receiver_contract
         .call("new")
         .args_json((nft_contract.id(),))
@@ -109,5 +146,10 @@ pub async fn init(
         .await?;
     assert!(res.is_success());
 
-    return Ok((nft_contract, alice, token_receiver_contract, approval_receiver_contract));
+    return Ok((
+        nft_contract,
+        alice,
+        token_receiver_contract,
+        approval_receiver_contract,
+    ));
 }

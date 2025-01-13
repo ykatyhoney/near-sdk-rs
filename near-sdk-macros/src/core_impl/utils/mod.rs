@@ -4,6 +4,9 @@ use syn::spanned::Spanned;
 use syn::token::{And, Mut};
 use syn::{GenericArgument, Path, PathArguments, Signature, Type};
 
+#[cfg(test)]
+pub mod test_helpers;
+
 /// Checks whether the given path is literally "Result".
 /// Note that it won't match a fully qualified name `core::result::Result` or a type alias like
 /// `type StringResult = Result<String, String>`.
@@ -79,16 +82,13 @@ pub(crate) fn extract_vec_type(ty: &Type) -> Option<&Type> {
 }
 
 /// Extracts reference and mutability tokens from a `Type` object. Also, strips top-level lifetime binding if present.
-pub(crate) fn extract_ref_mut(
-    ty: &Type,
-    span: Span,
-) -> syn::Result<(Option<And>, Option<Mut>, Type)> {
+pub(crate) fn extract_ref_mut(ty: &Type) -> syn::Result<(Option<And>, Option<Mut>, Type)> {
     match ty {
         x @ (Type::Array(_) | Type::Path(_) | Type::Tuple(_) | Type::Group(_)) => {
             Ok((None, None, (*x).clone()))
         }
         Type::Reference(r) => Ok((Some(r.and_token), r.mutability, (*r.elem.as_ref()).clone())),
-        _ => Err(syn::Error::new(span, "Unsupported contract API type.")),
+        _ => Err(syn::Error::new_spanned(ty, "Unsupported contract API type.")),
     }
 }
 

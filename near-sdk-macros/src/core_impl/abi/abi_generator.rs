@@ -1,6 +1,6 @@
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
-use syn::{Attribute, Lit::Str, Meta::NameValue, MetaNameValue, Type};
+use syn::{parse_quote, Attribute, Expr, Lit::Str, Meta::NameValue, MetaNameValue, Type};
 
 use crate::core_impl::{
     utils, BindgenArgType, ImplItemMethodInfo, ItemImplInfo, MethodKind, ReturnKind, SerializerType,
@@ -22,7 +22,7 @@ pub fn generate(i: &ItemImplInfo) -> TokenStream2 {
             pub extern "C" fn #near_abi_symbol() -> (*const u8, usize) {
                 use ::std::string::String;
 
-                let mut gen = ::near_sdk::__private::schemars::gen::SchemaGenerator::default();
+                let mut gen = ::near_sdk::schemars::gen::SchemaGenerator::default();
                 let functions = vec![#(#functions),*];
                 let mut data = ::std::mem::ManuallyDrop::new(
                     ::near_sdk::serde_json::to_vec(&::near_sdk::__private::ChunkedAbiEntry::new(
@@ -75,7 +75,7 @@ impl ImplItemMethodInfo {
     ///     })
     /// }
     /// ```
-    /// If args are serialized with Borsh it will not include `#[derive(borsh::BorshSchema)]`.
+    /// If args are serialized with Borsh it will not include `#[derive(::near_sdk::borsh::BorshSchema)]`.
     pub fn abi_struct(&self) -> TokenStream2 {
         let attr_signature_info = &self.attr_signature_info;
 
@@ -204,7 +204,11 @@ impl ImplItemMethodInfo {
         match &self.attr_signature_info.returns.kind {
             Default => quote! { ::std::option::Option::None },
             General(ty) => self.abi_result_tokens_with_return_value(ty),
-            HandlesResult { ok_type } => self.abi_result_tokens_with_return_value(ok_type),
+            HandlesResult(ty) => {
+                // extract the `Ok` type from the result
+                let ty = parse_quote! { <#ty as near_sdk::__private::ResultTypeExt>::Okay };
+                self.abi_result_tokens_with_return_value(&ty)
+            }
         }
     }
 
@@ -246,7 +250,7 @@ fn generate_schema(ty: &Type, serializer_type: &SerializerType) -> TokenStream2 
             gen.subschema_for::<#ty>()
         },
         SerializerType::Borsh => quote! {
-            <#ty as ::near_sdk::borsh::BorshSchema>::schema_container()
+            ::near_sdk::borsh::schema_container_of::<#ty>()
         },
     }
 }
@@ -271,15 +275,15 @@ pub fn parse_rustdoc(attrs: &[Attribute]) -> Option<String> {
     let doc = attrs
         .iter()
         .filter_map(|attr| {
-            if attr.path.is_ident("doc") {
-                if let NameValue(MetaNameValue { lit: Str(s), .. }) = attr.parse_meta().ok()? {
-                    Some(s.value())
-                } else {
-                    None
+            if attr.path().is_ident("doc") {
+                if let NameValue(MetaNameValue { value: Expr::Lit(value), .. }) = attr.meta.clone()
+                {
+                    if let Str(doc) = value.lit {
+                        return Some(doc.value());
+                    }
                 }
-            } else {
-                None
             }
+            None
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -295,10 +299,23 @@ pub fn parse_rustdoc(attrs: &[Attribute]) -> Option<String> {
 #[rustfmt::skip]
 #[cfg(test)]
 mod tests {
-    use quote::quote;
+    use proc_macro2::TokenStream;
     use syn::{parse_quote, Type};
     use crate::core_impl::ImplItemMethodInfo;
+    use crate::core_impl::utils::test_helpers::{local_insta_assert_snapshot, pretty_print_syn_str};
+    use quote::quote;
 
+
+    fn pretty_print_fn_body_syn_str(input: TokenStream) -> String {
+        let input =  quote!(
+            fn main() {
+            #input
+            }
+        );
+        let res = pretty_print_syn_str(&input).unwrap();
+       res.strip_prefix("fn main() {\n").unwrap().strip_suffix("}\n").unwrap().to_string()
+    }
+    
     #[test]
     fn test_generate_abi_fallible_json() {
         let impl_type: Type = syn::parse_str("Test").unwrap();
@@ -307,36 +324,10 @@ mod tests {
             #[handle_result]
             pub fn f3(&mut self, arg0: FancyStruct, arg1: u64) -> Result<IsOk, Error> { }
         };
-        let method_info = ImplItemMethodInfo::new(&mut method, false, impl_type).unwrap().unwrap();
+        let method_info = ImplItemMethodInfo::new(&mut method, None, impl_type).unwrap().unwrap();
         let actual = method_info.abi_struct();
-        
-        let expected = quote! {
-            ::near_sdk::__private::AbiFunction {
-                name: ::std::string::String::from("f3"),
-                doc: ::std::option::Option::Some(::std::string::String::from(" I am a function.")),
-                kind: ::near_sdk::__private::AbiFunctionKind::Call,
-                modifiers: ::std::vec![],
-                params: ::near_sdk::__private::AbiParameters::Json {
-                    args: ::std::vec![
-                        ::near_sdk::__private::AbiJsonParameter {
-                            name: ::std::string::String::from("arg0"),
-                            type_schema: gen.subschema_for::<FancyStruct>(),
-                        },
-                        ::near_sdk::__private::AbiJsonParameter {
-                            name: ::std::string::String::from("arg1"),
-                            type_schema: gen.subschema_for::<u64>(),
-                        }
-                    ]
-                },
-                callbacks: ::std::vec![],
-                callbacks_vec: ::std::option::Option::None,
-                result: ::std::option::Option::Some(::near_sdk::__private::AbiType::Json {
-                    type_schema: gen.subschema_for::<IsOk>(),
-                })
-            }
-        };
-        
-        assert_eq!(actual.to_string(), expected.to_string());
+
+        local_insta_assert_snapshot!(pretty_print_fn_body_syn_str(actual));
     }
 
     #[test]
@@ -348,32 +339,10 @@ mod tests {
             #[handle_result]
             pub fn f3(&mut self, #[serializer(borsh)] arg0: FancyStruct) -> Result<IsOk, Error> { }
         };
-        let method_info = ImplItemMethodInfo::new(&mut method, false, impl_type).unwrap().unwrap();
+        let method_info = ImplItemMethodInfo::new(&mut method, None, impl_type).unwrap().unwrap();
         let actual = method_info.abi_struct();
 
-        let expected = quote! {
-            ::near_sdk::__private::AbiFunction {
-                name: ::std::string::String::from("f3"),
-                doc: ::std::option::Option::None,
-                kind: ::near_sdk::__private::AbiFunctionKind::Call,
-                modifiers: ::std::vec![::near_sdk::__private::AbiFunctionModifier::Payable],
-                params: ::near_sdk::__private::AbiParameters::Borsh {
-                    args: ::std::vec![
-                        ::near_sdk::__private::AbiBorshParameter {
-                            name: ::std::string::String::from("arg0"),
-                            type_schema: <FancyStruct as ::near_sdk::borsh::BorshSchema>::schema_container(),
-                        }
-                    ]
-                },
-                callbacks: ::std::vec![],
-                callbacks_vec: ::std::option::Option::None,
-                result: ::std::option::Option::Some(::near_sdk::__private::AbiType::Borsh {
-                    type_schema: <IsOk as ::near_sdk::borsh::BorshSchema>::schema_container(),
-                })
-            }
-        };
-
-        assert_eq!(actual.to_string(), expected.to_string());
+        local_insta_assert_snapshot!(pretty_print_fn_body_syn_str(actual));
     }
     
     #[test]
@@ -386,29 +355,10 @@ mod tests {
                 #[callback_vec] x: Vec<String>, 
             ) -> bool { }
         };
-        let method_info = ImplItemMethodInfo::new(&mut method, false, impl_type).unwrap().unwrap();
+        let method_info = ImplItemMethodInfo::new(&mut method, None, impl_type).unwrap().unwrap();
         let actual = method_info.abi_struct();
-        
-        let expected = quote! {
-           ::near_sdk::__private::AbiFunction { 
-                name: ::std::string::String::from("method"),
-                doc: ::std::option::Option::None, 
-                kind: ::near_sdk::__private::AbiFunctionKind::View , 
-                modifiers: ::std::vec! [::near_sdk::__private::AbiFunctionModifier::Private],
-                params: ::near_sdk::__private::AbiParameters::Json { 
-                    args: ::std::vec![]
-                }, 
-                callbacks: ::std::vec! [], 
-                callbacks_vec: ::std::option::Option::Some(::near_sdk::__private::AbiType::Json { 
-                    type_schema: gen.subschema_for::< String >() , 
-                }),
-                result: ::std::option::Option::Some(::near_sdk::__private::AbiType::Json {
-                    type_schema: gen.subschema_for::< bool >() ,
-                })
-            }
-        };
-        
-        assert_eq!(actual.to_string(), expected.to_string());
+       
+        local_insta_assert_snapshot!(pretty_print_fn_body_syn_str(actual));
     }
     
     #[test]
@@ -417,37 +367,10 @@ mod tests {
         let mut method = parse_quote! {
             pub fn method(&self, #[callback_unwrap] #[serializer(borsh)] x: &mut u64, #[serializer(borsh)] y: String, #[callback_unwrap] #[serializer(json)] z: Vec<u8>) { }
         };
-        let method_info = ImplItemMethodInfo::new(&mut method, false, impl_type).unwrap().unwrap();
+        let method_info = ImplItemMethodInfo::new(&mut method, None, impl_type).unwrap().unwrap();
         let actual = method_info.abi_struct();
 
-        let expected = quote! {
-           ::near_sdk::__private::AbiFunction { 
-                name: ::std::string::String::from("method"),
-                doc: ::std::option::Option::None, 
-                kind: ::near_sdk::__private::AbiFunctionKind::View , 
-                modifiers: ::std::vec! [],
-                params: ::near_sdk::__private::AbiParameters::Borsh {
-                    args: ::std::vec! [
-                        ::near_sdk::__private::AbiBorshParameter {
-                            name: ::std::string::String::from("y"),
-                            type_schema: < String as ::near_sdk::borsh::BorshSchema >::schema_container(),
-                        }
-                    ]
-                }, 
-                callbacks: ::std::vec! [
-                    ::near_sdk::__private::AbiType::Borsh { 
-                        type_schema: <u64 as ::near_sdk::borsh::BorshSchema>::schema_container(),
-                    },
-                    ::near_sdk::__private::AbiType::Json {
-                        type_schema: gen.subschema_for::< Vec<u8> >(),
-                    }
-                ],
-                callbacks_vec: ::std::option::Option::None,
-                result: ::std::option::Option::None 
-            }
-        };
-
-        assert_eq!(actual.to_string(), expected.to_string());
+        local_insta_assert_snapshot!(pretty_print_fn_body_syn_str(actual));
     }
     
     #[test]
@@ -457,27 +380,10 @@ mod tests {
             #[init(ignore_state)]
             pub fn new() -> u64 { }
         };
-        let method_info = ImplItemMethodInfo::new(&mut method, false, impl_type).unwrap().unwrap();
+        let method_info = ImplItemMethodInfo::new(&mut method, None, impl_type).unwrap().unwrap();
         let actual = method_info.abi_struct();
 
-        let expected = quote! {
-            ::near_sdk::__private::AbiFunction {
-                name: ::std::string::String::from("new"),
-                doc: ::std::option::Option::None,
-                kind: ::near_sdk::__private::AbiFunctionKind::Call,
-                modifiers: ::std::vec![
-                    ::near_sdk::__private::AbiFunctionModifier::Init
-                ],
-                params: ::near_sdk::__private::AbiParameters::Json {
-                    args: ::std::vec![]
-                },
-                callbacks: ::std::vec![],
-                callbacks_vec: ::std::option::Option::None,
-                result: ::std::option::Option::None
-            }
-        };
-
-        assert_eq!(actual.to_string(), expected.to_string());
+        local_insta_assert_snapshot!(pretty_print_fn_body_syn_str(actual));
     }
     
     #[test]
@@ -486,24 +392,9 @@ mod tests {
         let mut method = parse_quote! {
             pub fn method() { }
         };
-        let method_info = ImplItemMethodInfo::new(&mut method, false, impl_type).unwrap().unwrap();
+        let method_info = ImplItemMethodInfo::new(&mut method, None, impl_type).unwrap().unwrap();
         let actual = method_info.abi_struct();
 
-        let expected = quote! {
-            ::near_sdk::__private::AbiFunction {
-                name: ::std::string::String::from("method"),
-                doc: ::std::option::Option::None,
-                kind: ::near_sdk::__private::AbiFunctionKind::View,
-                modifiers: ::std::vec![],
-                params: ::near_sdk::__private::AbiParameters::Json {
-                    args: ::std::vec![]
-                },
-                callbacks: ::std::vec![],
-                callbacks_vec: ::std::option::Option::None,
-                result: ::std::option::Option::None
-            }
-        };
-
-        assert_eq!(actual.to_string(), expected.to_string());
+        local_insta_assert_snapshot!(pretty_print_fn_body_syn_str(actual));
     }
 }

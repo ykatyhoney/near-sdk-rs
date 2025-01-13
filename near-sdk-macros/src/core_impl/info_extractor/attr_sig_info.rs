@@ -1,5 +1,7 @@
 use super::visitor::Visitor;
-use super::{ArgInfo, BindgenArgType, InitAttr, MethodKind, SerializerAttr, SerializerType};
+use super::{
+    ArgInfo, BindgenArgType, HandleResultAttr, InitAttr, MethodKind, SerializerAttr, SerializerType,
+};
 use crate::core_impl::{utils, Returns};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::ToTokens;
@@ -22,6 +24,19 @@ pub struct AttrSigInfo {
     pub input_serializer: SerializerType,
     /// The original method signature.
     pub original_sig: Signature,
+}
+
+use darling::FromAttributes;
+#[derive(darling::FromAttributes, Clone, Debug)]
+#[darling(
+    attributes(init, payable, private, result_serializer, serializer, handle_result),
+    forward_attrs(serializer)
+)]
+struct AttributeConfig {
+    borsh: Option<bool>,
+    json: Option<bool>,
+    ignore_state: Option<bool>,
+    aliased: Option<bool>,
 }
 
 impl AttrSigInfo {
@@ -54,7 +69,6 @@ impl AttrSigInfo {
         source_type: &TokenStream2,
     ) -> syn::Result<Self> {
         let mut self_occurrences = Self::sanitize_self(original_sig, source_type)?;
-
         let mut errors = vec![];
         for generic in &original_sig.generics.params {
             match generic {
@@ -83,12 +97,16 @@ impl AttrSigInfo {
         let ident = original_sig.ident.clone();
         let mut non_bindgen_attrs = vec![];
 
+        let args = AttributeConfig::from_attributes(original_attrs)?;
         // Visit attributes
         for attr in original_attrs.iter() {
-            let attr_str = attr.path.to_token_stream().to_string();
+            let attr_str = attr.path().to_token_stream().to_string();
             match attr_str.as_str() {
                 "init" => {
-                    let init_attr: InitAttr = syn::parse2(attr.tokens.clone())?;
+                    let mut init_attr = InitAttr { ignore_state: false };
+                    if let Some(state) = args.ignore_state {
+                        init_attr.ignore_state = state;
+                    }
                     visitor.visit_init_attr(attr, &init_attr)?;
                 }
                 "payable" => {
@@ -98,11 +116,33 @@ impl AttrSigInfo {
                     visitor.visit_private_attr(attr)?;
                 }
                 "result_serializer" => {
-                    let serializer: SerializerAttr = syn::parse2(attr.tokens.clone())?;
+                    if args.borsh.is_some() && args.json.is_some() {
+                        return Err(Error::new(
+                            attr.span(),
+                            "Only one of `borsh` or `json` can be specified.",
+                        ));
+                    };
+                    let mut serializer = SerializerAttr { serializer_type: SerializerType::JSON };
+                    if let Some(borsh) = args.borsh {
+                        if borsh {
+                            serializer.serializer_type = SerializerType::Borsh;
+                        }
+                    }
+                    if let Some(json) = args.json {
+                        if json {
+                            serializer.serializer_type = SerializerType::JSON;
+                        }
+                    }
                     visitor.visit_result_serializer_attr(attr, &serializer)?;
                 }
                 "handle_result" => {
-                    visitor.visit_handle_result_attr();
+                    if let Some(value) = args.aliased {
+                        let handle_result = HandleResultAttr { check: value };
+                        visitor.visit_handle_result_attr(&handle_result);
+                    } else {
+                        let handle_result = HandleResultAttr { check: false };
+                        visitor.visit_handle_result_attr(&handle_result);
+                    }
                 }
                 _ => {
                     non_bindgen_attrs.push((*attr).clone());
@@ -125,27 +165,13 @@ impl AttrSigInfo {
 
         self_occurrences.extend(args.iter().flat_map(|arg| arg.self_occurrences.clone()));
 
-        *original_attrs = non_bindgen_attrs.clone();
+        original_attrs.clone_from(&non_bindgen_attrs);
 
-        if !self_occurrences.is_empty()
-            && matches!(method_kind, MethodKind::Call(_) | MethodKind::View(_))
-        {
-            // TODO: return an error instead in 5.0
-            // see https://github.com/near/near-sdk-rs/issues/1005
-            println!(
-                "near_bindgen: references to `Self` in non-init methods will be forbidden in 5.0"
-            );
-
-            // Once proc_macro::Diagnostic is stabilized, we could start getting rid of the `println` and
-            // try the code below. See: https://github.com/rust-lang/rust/issues/54140
-            //
-            // proc_macro::Diagnostic::spanned(
-            //     self_occurrences.into(),
-            //     proc_macro::Level::Warning,
-            //     "references to `Self` in non-init methods will be forbidden in 5.0",
-            // )
-            // .emit();
-            //
+        if matches!(method_kind, MethodKind::Call(_) | MethodKind::View(_)) {
+            report_spans(
+                &self_occurrences,
+                "references to `Self` in non-init methods are forbidden since `near-sdk` 5.0",
+            )?;
         }
 
         let mut result = AttrSigInfo {
@@ -176,5 +202,23 @@ impl AttrSigInfo {
     /// Only get args that correspond to `env::input()`.
     pub fn input_args(&self) -> impl Iterator<Item = &ArgInfo> {
         self.args.iter().filter(|arg| matches!(arg.bindgen_ty, BindgenArgType::Regular))
+    }
+}
+
+// Generate errors for a given collection of spans. Returns `Ok` if no spans are provided.
+fn report_spans(spans: &[Span], msg: &str) -> Result<(), syn::Error> {
+    if spans.is_empty() {
+        Ok(())
+    } else {
+        let combined_errors = spans
+            .iter()
+            .map(|span| syn::Error::new(*span, msg))
+            .reduce(|mut acc, e| {
+                acc.combine(e);
+                acc
+            })
+            .unwrap();
+
+        Err(combined_errors)
     }
 }

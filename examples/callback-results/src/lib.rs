@@ -1,12 +1,12 @@
 use near_sdk::require;
-use near_sdk::{env, near_bindgen, Promise, PromiseError};
+use near_sdk::{env, near, Promise, PromiseError};
 
 const A_VALUE: u8 = 8;
 
-#[near_bindgen]
+#[near(contract_state)]
 pub struct Callback;
 
-#[near_bindgen]
+#[near]
 impl Callback {
     /// Call functions a, b, and c asynchronously and handle results with `handle_callbacks`.
     pub fn call_all(fail_b: bool, c_value: u8, d_value: u8) -> Promise {
@@ -63,12 +63,10 @@ impl Callback {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use tokio::fs;
-
     #[tokio::test]
     async fn workspaces_test() -> anyhow::Result<()> {
-        let wasm = fs::read("res/callback_results.wasm").await?;
-        let worker = workspaces::sandbox().await?;
+        let wasm = near_workspaces::compile_project("./").await?;
+        let worker = near_workspaces::sandbox().await?;
         let contract = worker.dev_deploy(&wasm).await?;
 
         // Call function a only to ensure it has correct behaviour
@@ -97,7 +95,7 @@ mod tests {
         let res = contract
             .call("call_all")
             .args_json((false, 1u8, 0u8))
-            .gas(300_000_000_000_000)
+            .gas(near_sdk::Gas::from_tgas(300))
             .transact()
             .await?;
         assert_eq!(res.json::<(bool, bool, bool)>()?, (false, false, true));
@@ -106,7 +104,7 @@ mod tests {
         let res = contract
             .call("call_all")
             .args_json((true, 0u8, 1u8))
-            .gas(300_000_000_000_000)
+            .gas(near_sdk::Gas::from_tgas(300))
             .transact()
             .await?;
         assert_eq!(res.json::<(bool, bool, bool)>()?, (true, true, false));
@@ -115,7 +113,7 @@ mod tests {
         let res = contract
             .call("call_all")
             .args_json((true, 0u8, 0u8))
-            .gas(300_000_000_000_000)
+            .gas(near_sdk::Gas::from_tgas(300))
             .transact()
             .await?;
         assert_eq!(res.json::<(bool, bool, bool)>()?, (true, true, true));

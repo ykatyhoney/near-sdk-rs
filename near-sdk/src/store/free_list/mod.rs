@@ -3,58 +3,38 @@ pub use self::iter::{Drain, Iter, IterMut};
 
 use super::{Vector, ERR_INCONSISTENT_STATE};
 use crate::{env, IntoStorageKey};
+use near_sdk_macros::near;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use std::{fmt, mem};
 
 /// Index for value within a bucket.
-#[derive(BorshSerialize, BorshDeserialize, Debug, Hash, PartialEq, Eq, Clone, Copy)]
+#[near(inside_nearsdk)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub struct FreeListIndex(pub(crate) u32);
 
 /// Unordered container of values. This is similar to [`Vector`] except that values are not
 /// re-arranged on removal, keeping the indices consistent. When an element is removed, it will
 /// be replaced with an empty cell which will be populated on the next insertion.
+#[near(inside_nearsdk)]
 pub(crate) struct FreeList<T>
 where
     T: BorshSerialize,
 {
     first_free: Option<FreeListIndex>,
     occupied_count: u32,
+    // ser/de is independent of `T` ser/de, `BorshSerialize`/`BorshDeserialize`/`BorshSchema` bounds removed
+    #[cfg_attr(not(feature = "abi"), borsh(bound(serialize = "", deserialize = "")))]
+    #[cfg_attr(
+        feature = "abi",
+        borsh(bound(serialize = "", deserialize = ""), schema(params = ""))
+    )]
     elements: Vector<Slot<T>>,
 }
 
-//? Manual implementations needed only because borsh derive is leaking field types
-// https://github.com/near/borsh-rs/issues/41
-impl<T> BorshSerialize for FreeList<T>
-where
-    T: BorshSerialize,
-{
-    fn serialize<W: borsh::maybestd::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), borsh::maybestd::io::Error> {
-        BorshSerialize::serialize(&self.first_free, writer)?;
-        BorshSerialize::serialize(&self.occupied_count, writer)?;
-        BorshSerialize::serialize(&self.elements, writer)?;
-        Ok(())
-    }
-}
-
-impl<T> BorshDeserialize for FreeList<T>
-where
-    T: BorshSerialize,
-{
-    fn deserialize(buf: &mut &[u8]) -> Result<Self, borsh::maybestd::io::Error> {
-        Ok(Self {
-            first_free: BorshDeserialize::deserialize(buf)?,
-            occupied_count: BorshDeserialize::deserialize(buf)?,
-            elements: BorshDeserialize::deserialize(buf)?,
-        })
-    }
-}
-
-#[derive(BorshDeserialize, BorshSerialize, Debug)]
+#[near(inside_nearsdk)]
+#[derive(Debug, Clone)]
 enum Slot<T> {
     /// Represents a filled cell of a value in the collection.
     Occupied(T),
@@ -523,7 +503,7 @@ mod tests {
                             sv.flush();
                         }
                         Op::Reset => {
-                            let serialized = sv.try_to_vec().unwrap();
+                            let serialized = borsh::to_vec(&sv).unwrap();
                             sv = FreeList::deserialize(&mut serialized.as_slice()).unwrap();
                         }
                         Op::Get(k) => {
@@ -540,5 +520,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "abi")]
+    #[test]
+    fn test_borsh_schema() {
+        #[derive(
+            borsh::BorshSerialize, borsh::BorshDeserialize, PartialEq, Eq, PartialOrd, Ord,
+        )]
+        struct NoSchemaStruct;
+
+        assert_eq!(
+            "FreeList".to_string(),
+            <FreeList<NoSchemaStruct> as borsh::BorshSchema>::declaration()
+        );
+        let mut defs = Default::default();
+        <FreeList<NoSchemaStruct> as borsh::BorshSchema>::add_definitions_recursively(&mut defs);
+        insta::assert_snapshot!(format!("{:#?}", defs));
     }
 }

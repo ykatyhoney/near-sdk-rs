@@ -1,3 +1,6 @@
+// This suppresses the depreciation warnings for uses of UnorderedSet in this module
+#![allow(deprecated)]
+
 mod entry;
 mod impls;
 mod iter;
@@ -6,6 +9,8 @@ use std::borrow::Borrow;
 use std::{fmt, mem};
 
 use borsh::{BorshDeserialize, BorshSerialize};
+
+use near_sdk_macros::near;
 
 use crate::store::key::{Sha256, ToKey};
 use crate::{env, IntoStorageKey};
@@ -27,6 +32,12 @@ use super::{FreeList, LookupMap, ERR_INCONSISTENT_STATE, ERR_NOT_EXIST};
 /// (or host function) built into the NEAR runtime to hash the key. To use a custom function,
 /// use [`with_hasher`]. Alternative builtin hash functions can be found at
 /// [`near_sdk::store::key`](crate::store::key).
+///
+/// # Performance considerations
+/// Note that this collection is optimized for fast removes at the expense of key management.
+/// If the amount of removes is significantly higher than the amount of inserts the iteration
+/// becomes more costly. See [`remove`](UnorderedMap::remove) for details.
+/// If this is the use-case - see ['IterableMap`](crate::store::IterableMap).
 ///
 /// # Examples
 /// ```
@@ -75,52 +86,37 @@ use super::{FreeList, LookupMap, ERR_INCONSISTENT_STATE, ERR_NOT_EXIST};
 /// ```
 ///
 /// [`with_hasher`]: Self::with_hasher
+#[deprecated(
+    since = "5.0.0",
+    note = "Suboptimal iteration performance. See performance considerations doc for details. Consider using IterableMap instead (WARNING: manual storage migration is required if contract was previously deployed)"
+)]
+#[near(inside_nearsdk)]
 pub struct UnorderedMap<K, V, H = Sha256>
 where
     K: BorshSerialize + Ord,
     V: BorshSerialize,
     H: ToKey,
 {
+    // ser/de is independent of `K` ser/de, `BorshSerialize`/`BorshDeserialize`/`BorshSchema` bounds removed
+    #[cfg_attr(not(feature = "abi"), borsh(bound(serialize = "", deserialize = "")))]
+    #[cfg_attr(
+        feature = "abi",
+        borsh(bound(serialize = "", deserialize = ""), schema(params = ""))
+    )]
     keys: FreeList<K>,
+    // ser/de is independent of `K`, `V`, `H` ser/de, `BorshSerialize`/`BorshDeserialize`/`BorshSchema` bounds removed
+    #[cfg_attr(not(feature = "abi"), borsh(bound(serialize = "", deserialize = "")))]
+    #[cfg_attr(
+        feature = "abi",
+        borsh(bound(serialize = "", deserialize = ""), schema(params = ""))
+    )]
     values: LookupMap<K, ValueAndIndex<V>, H>,
 }
 
-#[derive(BorshSerialize, BorshDeserialize)]
+#[near(inside_nearsdk)]
 struct ValueAndIndex<V> {
     value: V,
     key_index: FreeListIndex,
-}
-
-//? Manual implementations needed only because borsh derive is leaking field types
-// https://github.com/near/borsh-rs/issues/41
-impl<K, V, H> BorshSerialize for UnorderedMap<K, V, H>
-where
-    K: BorshSerialize + Ord,
-    V: BorshSerialize,
-    H: ToKey,
-{
-    fn serialize<W: borsh::maybestd::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), borsh::maybestd::io::Error> {
-        BorshSerialize::serialize(&self.keys, writer)?;
-        BorshSerialize::serialize(&self.values, writer)?;
-        Ok(())
-    }
-}
-
-impl<K, V, H> BorshDeserialize for UnorderedMap<K, V, H>
-where
-    K: BorshSerialize + Ord,
-    V: BorshSerialize,
-    H: ToKey,
-{
-    fn deserialize(buf: &mut &[u8]) -> Result<Self, borsh::maybestd::io::Error> {
-        Ok(Self {
-            keys: BorshDeserialize::deserialize(buf)?,
-            values: BorshDeserialize::deserialize(buf)?,
-        })
-    }
 }
 
 impl<K, V, H> Drop for UnorderedMap<K, V, H>
@@ -666,6 +662,9 @@ where
     /// placeholders might make iteration more costly, driving higher gas costs. This method is meant
     /// to remedy that by removing all empty slots from the underlying vector and compacting it.
     ///
+    /// Note that this might exceed the available gas amount depending on the amount of free slots,
+    /// therefore has to be used with caution.
+    ///
     /// # Examples
     ///
     /// ```
@@ -697,7 +696,7 @@ mod tests {
     use super::UnorderedMap;
     use crate::test_utils::test_env::setup_free;
     use arbitrary::{Arbitrary, Unstructured};
-    use borsh::{BorshDeserialize, BorshSerialize};
+    use borsh::{to_vec, BorshDeserialize};
     use rand::RngCore;
     use rand::SeedableRng;
     use std::collections::HashMap;
@@ -804,7 +803,7 @@ mod tests {
                             um.flush();
                         }
                         Op::Restore => {
-                            let serialized = um.try_to_vec().unwrap();
+                            let serialized = to_vec(&um).unwrap();
                             um = UnorderedMap::deserialize(&mut serialized.as_slice()).unwrap();
                         }
                         Op::Get(k) => {
@@ -849,5 +848,23 @@ mod tests {
         assert_eq!(map.remove_entry(&8).unwrap(), (8, 8));
         assert_eq!(map.remove_entry(&1).unwrap(), (1, 1));
         assert_eq!(map.remove_entry(&3).unwrap(), (3, 3));
+    }
+
+    #[cfg(feature = "abi")]
+    #[test]
+    fn test_borsh_schema() {
+        #[derive(
+            borsh::BorshSerialize, borsh::BorshDeserialize, PartialEq, Eq, PartialOrd, Ord,
+        )]
+        struct NoSchemaStruct;
+
+        assert_eq!(
+            "UnorderedMap".to_string(),
+            <UnorderedMap<NoSchemaStruct, NoSchemaStruct> as borsh::BorshSchema>::declaration()
+        );
+        let mut defs = Default::default();
+        <UnorderedMap<NoSchemaStruct, NoSchemaStruct> as borsh::BorshSchema>::add_definitions_recursively(&mut defs);
+
+        insta::assert_snapshot!(format!("{:#?}", defs));
     }
 }

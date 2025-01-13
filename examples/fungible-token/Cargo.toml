@@ -6,17 +6,10 @@ edition = "2021"
 
 [dev-dependencies]
 anyhow = "1.0"
-base64 = "0.13"
-near-primitives = "0.17"
-near-sdk = { path = "../../near-sdk" }
-near-units = "0.2.0"
-serde_json = "1.0"
+near-sdk = { path = "../../near-sdk", features = ["unit-testing"] }
 tokio = { version = "1.14", features = ["full"] }
-workspaces = "0.7.0"
-
-# remember to include a line for each contract
-fungible-token = { path = "./ft" }
-defi = { path = "./test-contract-defi" }
+near-workspaces = { version = "0.16", features = ["unstable"] }
+rstest = "0.23.0"
 
 [profile.release]
 codegen-units = 1
@@ -29,7 +22,4 @@ overflow-checks = true
 
 [workspace]
 # remember to include a member for each contract
-members = [
-  "ft",
-  "test-contract-defi",
-]
+members = ["ft", "test-contract-defi"]

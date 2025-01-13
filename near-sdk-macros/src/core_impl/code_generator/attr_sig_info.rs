@@ -48,6 +48,7 @@ impl AttrSigInfo {
             },
             SerializerType::Borsh => quote! {
                 #[derive(::near_sdk::borsh::BorshSerialize)]
+                #[borsh(crate = "::near_sdk::borsh")]
             },
         };
         let mut fields = TokenStream2::new();
@@ -94,6 +95,7 @@ impl AttrSigInfo {
             },
             SerializerType::Borsh => quote! {
                 #[derive(::near_sdk::borsh::BorshDeserialize)]
+                #[borsh(crate = "::near_sdk::borsh")]
             },
         };
         let mut fields = TokenStream2::new();
@@ -305,13 +307,19 @@ impl AttrSigInfo {
     }
 }
 
-pub fn deserialize_data(ty: &SerializerType) -> TokenStream2 {
+fn deserialize_data(ty: &SerializerType) -> TokenStream2 {
     match ty {
         SerializerType::JSON => quote! {
-            ::near_sdk::serde_json::from_slice(&data).expect("Failed to deserialize callback using JSON")
+            match ::near_sdk::serde_json::from_slice(&data) {
+                Ok(deserialized) => deserialized,
+                Err(_) => ::near_sdk::env::panic_str("Failed to deserialize callback using JSON"),
+            }
         },
         SerializerType::Borsh => quote! {
-            ::near_sdk::borsh::BorshDeserialize::try_from_slice(&data).expect("Failed to deserialize callback using Borsh")
+            match ::near_sdk::borsh::BorshDeserialize::try_from_slice(&data) {
+                Ok(deserialized) => deserialized,
+                Err(_) => ::near_sdk::env::panic_str("Failed to deserialize callback using Borsh"),
+            }
         },
     }
 }

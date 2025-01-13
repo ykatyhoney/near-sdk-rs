@@ -1,23 +1,31 @@
-use crate::utils::init;
+use crate::utils::initialized_contracts;
 use near_contract_standards::non_fungible_token::Token;
 
-use near_sdk::{AccountId, ONE_NEAR, ONE_YOCTO};
+use near_sdk::AccountId;
+use near_workspaces::types::NearToken;
+use near_workspaces::{Account, Contract};
+use rstest::rstest;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
 pub const TOKEN_ID: &str = "0";
 
+const ONE_NEAR: NearToken = NearToken::from_near(1);
+const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
+
+#[rstest]
 #[tokio::test]
-async fn simulate_simple_approve() -> anyhow::Result<()> {
-    let worker = workspaces::sandbox().await?;
-    let (nft_contract, alice, token_receiver_contract, _) = init(&worker).await?;
+async fn simulate_simple_approve(
+    #[future] initialized_contracts: anyhow::Result<(Contract, Account, Contract, Contract)>,
+) -> anyhow::Result<()> {
+    let (nft_contract, alice, token_receiver_contract, _) = initialized_contracts.await?;
 
     // root approves alice
     let res = nft_contract
         .call("nft_approve")
         .args_json((TOKEN_ID, alice.id(), Option::<String>::None))
         .max_gas()
-        .deposit(510000000000000000000)
+        .deposit(NearToken::from_yoctonear(510000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -81,11 +89,15 @@ async fn simulate_simple_approve() -> anyhow::Result<()> {
     // approving another account gives different approval_id
     let res = nft_contract
         .call("nft_approve")
-        .args_json((TOKEN_ID, token_receiver_contract.id(), Option::<String>::None))
+        .args_json((
+            TOKEN_ID,
+            token_receiver_contract.id(),
+            Option::<String>::None,
+        ))
         .max_gas()
         // note that token_receiver's account name is shorter, and so takes less bytes to store and
         // therefore requires a smaller deposit!
-        .deposit(450000000000000000000)
+        .deposit(NearToken::from_yoctonear(450000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -101,16 +113,22 @@ async fn simulate_simple_approve() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[rstest]
 #[tokio::test]
-async fn simulate_approval_with_call() -> anyhow::Result<()> {
-    let worker = workspaces::sandbox().await?;
-    let (nft_contract, _, _, approval_receiver_contract) = init(&worker).await?;
+async fn simulate_approval_with_call(
+    #[future] initialized_contracts: anyhow::Result<(Contract, Account, Contract, Contract)>,
+) -> anyhow::Result<()> {
+    let (nft_contract, _, _, approval_receiver_contract) = initialized_contracts.await?;
 
     let res = nft_contract
         .call("nft_approve")
-        .args_json((TOKEN_ID, approval_receiver_contract.id(), Some("return-now".to_string())))
+        .args_json((
+            TOKEN_ID,
+            approval_receiver_contract.id(),
+            Some("return-now".to_string()),
+        ))
         .max_gas()
-        .deposit(450000000000000000000)
+        .deposit(NearToken::from_yoctonear(450000000000000000000))
         .transact()
         .await?;
     assert_eq!(res.json::<String>()?, "cool".to_string());
@@ -131,17 +149,19 @@ async fn simulate_approval_with_call() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[rstest]
 #[tokio::test]
-async fn simulate_approved_account_transfers_token() -> anyhow::Result<()> {
-    let worker = workspaces::sandbox().await?;
-    let (nft_contract, alice, _, _) = init(&worker).await?;
+async fn simulate_approved_account_transfers_token(
+    #[future] initialized_contracts: anyhow::Result<(Contract, Account, Contract, Contract)>,
+) -> anyhow::Result<()> {
+    let (nft_contract, alice, _, _) = initialized_contracts.await?;
 
     // root approves alice
     let res = nft_contract
         .call("nft_approve")
         .args_json((TOKEN_ID, alice.id(), Option::<String>::None))
         .max_gas()
-        .deposit(510000000000000000000)
+        .deposit(NearToken::from_yoctonear(510000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -149,7 +169,12 @@ async fn simulate_approved_account_transfers_token() -> anyhow::Result<()> {
     // alice sends to self
     let res = alice
         .call(nft_contract.id(), "nft_transfer")
-        .args_json((alice.id(), TOKEN_ID, Some(1u64), Some("gotcha! bahahaha".to_string())))
+        .args_json((
+            alice.id(),
+            TOKEN_ID,
+            Some(1u64),
+            Some("gotcha! bahahaha".to_string()),
+        ))
         .max_gas()
         .deposit(ONE_YOCTO)
         .transact()
@@ -168,17 +193,19 @@ async fn simulate_approved_account_transfers_token() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[rstest]
 #[tokio::test]
-async fn simulate_revoke() -> anyhow::Result<()> {
-    let worker = workspaces::sandbox().await?;
-    let (nft_contract, alice, token_receiver_contract, _) = init(&worker).await?;
+async fn simulate_revoke(
+    #[future] initialized_contracts: anyhow::Result<(Contract, Account, Contract, Contract)>,
+) -> anyhow::Result<()> {
+    let (nft_contract, alice, token_receiver_contract, _) = initialized_contracts.await?;
 
     // root approves alice
     let res = nft_contract
         .call("nft_approve")
         .args_json((TOKEN_ID, alice.id(), Option::<String>::None))
         .max_gas()
-        .deposit(510000000000000000000)
+        .deposit(NearToken::from_yoctonear(510000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -186,9 +213,13 @@ async fn simulate_revoke() -> anyhow::Result<()> {
     // root approves token_receiver
     let res = nft_contract
         .call("nft_approve")
-        .args_json((TOKEN_ID, token_receiver_contract.id(), Option::<String>::None))
+        .args_json((
+            TOKEN_ID,
+            token_receiver_contract.id(),
+            Option::<String>::None,
+        ))
         .max_gas()
-        .deposit(450000000000000000000)
+        .deposit(NearToken::from_yoctonear(450000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -252,17 +283,19 @@ async fn simulate_revoke() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[rstest]
 #[tokio::test]
-async fn simulate_revoke_all() -> anyhow::Result<()> {
-    let worker = workspaces::sandbox().await?;
-    let (nft_contract, alice, token_receiver_contract, _) = init(&worker).await?;
+async fn simulate_revoke_all(
+    #[future] initialized_contracts: anyhow::Result<(Contract, Account, Contract, Contract)>,
+) -> anyhow::Result<()> {
+    let (nft_contract, alice, token_receiver_contract, _) = initialized_contracts.await?;
 
     // root approves alice
     let res = nft_contract
         .call("nft_approve")
         .args_json((TOKEN_ID, alice.id(), Option::<String>::None))
         .max_gas()
-        .deposit(510000000000000000000)
+        .deposit(NearToken::from_yoctonear(510000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());
@@ -270,9 +303,13 @@ async fn simulate_revoke_all() -> anyhow::Result<()> {
     // root approves token_receiver
     let res = nft_contract
         .call("nft_approve")
-        .args_json((TOKEN_ID, token_receiver_contract.id(), Option::<String>::None))
+        .args_json((
+            TOKEN_ID,
+            token_receiver_contract.id(),
+            Option::<String>::None,
+        ))
         .max_gas()
-        .deposit(450000000000000000000)
+        .deposit(NearToken::from_yoctonear(450000000000000000000))
         .transact()
         .await?;
     assert!(res.is_success());

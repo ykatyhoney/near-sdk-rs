@@ -7,10 +7,10 @@ pub(crate) use self::stable_map::StableMap;
 mod cache_entry;
 pub(crate) use cache_entry::{CacheEntry, EntryState};
 
-use crate::{env, PromiseResult};
+use crate::{env, NearToken, PromiseResult};
 
 /// Helper macro to log a message through [`env::log_str`].
-/// This macro can be used similar to the [`std::format`] macro in most cases.
+/// This macro can be used similar to the [`std::format`] macro.
 ///
 /// This differs from [`std::format`] because instead of generating a string, it will log the utf8
 /// bytes as a log through [`env::log_str`].
@@ -25,7 +25,7 @@ use crate::{env, PromiseResult};
 /// # fn main() {
 /// log!("test");
 /// let world: &str = "world";
-/// log!(world);
+/// log!("{world}");
 /// log!("Hello {}", world);
 /// log!("x = {}, y = {y}", 10, y = 30);
 /// # }
@@ -34,11 +34,8 @@ use crate::{env, PromiseResult};
 /// [`env::log_str`]: crate::env::log_str
 #[macro_export]
 macro_rules! log {
-    ($arg:expr) => {
-        $crate::env::log_str($arg.as_ref())
-    };
     ($($arg:tt)*) => {
-        $crate::env::log_str(format!($($arg)*).as_str())
+        $crate::env::log_str(::std::format!($($arg)*).as_str())
     };
 }
 
@@ -85,7 +82,10 @@ pub fn assert_self() {
 
 /// Assert that 1 yoctoNEAR was attached.
 pub fn assert_one_yocto() {
-    require!(env::attached_deposit() == 1, "Requires attached deposit of exactly 1 yoctoNEAR")
+    require!(
+        env::attached_deposit() == NearToken::from_yoctonear(1),
+        "Requires attached deposit of exactly 1 yoctoNEAR"
+    )
 }
 
 /// Returns true if promise was successful.
