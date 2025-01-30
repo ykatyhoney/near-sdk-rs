@@ -7,11 +7,11 @@ pub use self::public_key::{CurveType, PublicKey};
 mod primitives;
 pub use self::primitives::*;
 
-mod account_id;
-pub use self::account_id::{AccountId, ParseAccountIdError};
-
-mod gas;
-pub use self::gas::Gas;
+pub use near_account_id::{AccountId, AccountIdRef};
+/// A wrapper struct for `u64` that represents gas. And provides helpful methods to convert to and from tera-gas and giga-gas.
+pub use near_gas::NearGas as Gas;
+/// A wrapper struct for `u128` that represents tokens. And provides helpful methods to convert with a proper precision.
+pub use near_token::NearToken;
 
 mod error;
 pub use self::error::Abort;
@@ -45,9 +45,3 @@ impl Default for GasWeight {
         Self(1)
     }
 }
-
-/// Balance of one Yocto NEAR, which is the smallest denomination. This value is 10^-24 of one NEAR.
-pub const ONE_YOCTO: Balance = 1;
-
-/// Balance of one NEAR, which is 10^24 Yocto NEAR.
-pub const ONE_NEAR: Balance = 1_000_000_000_000_000_000_000_000;

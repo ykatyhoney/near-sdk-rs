@@ -1,8 +1,8 @@
 mod approval_impl;
 mod approval_receiver;
 
-pub use approval_impl::*;
 pub use approval_receiver::*;
+use near_sdk::ext_contract;
 
 use crate::non_fungible_token::token::TokenId;
 use near_sdk::AccountId;
@@ -22,17 +22,16 @@ use near_sdk::Promise;
 ///
 /// ```
 /// use std::collections::HashMap;
-/// use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-/// use near_sdk::{PanicOnDefault, AccountId, PromiseOrValue, near_bindgen, Promise};
+/// use near_sdk::{PanicOnDefault, AccountId, PromiseOrValue, near, Promise};
 /// use near_contract_standards::non_fungible_token::{TokenId, NonFungibleToken, NonFungibleTokenApproval};
 ///
-/// #[near_bindgen]
-/// #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
+/// #[near(contract_state)]
+/// #[derive(PanicOnDefault)]
 /// pub struct Contract {
 ///    tokens: NonFungibleToken,
 ///}
 ///
-/// #[near_bindgen]
+/// #[near]
 /// impl NonFungibleTokenApproval for Contract {
 ///     #[payable]
 ///     fn nft_approve(&mut self, token_id: TokenId, account_id: AccountId, msg: Option<String>) -> Option<Promise> {
@@ -56,6 +55,7 @@ use near_sdk::Promise;
 /// }
 /// ```
 ///
+#[ext_contract(ext_nft_approval)]
 pub trait NonFungibleTokenApproval {
     /// Add an approved account for a specific token.
     ///

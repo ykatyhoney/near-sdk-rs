@@ -13,6 +13,8 @@ fn compilation_tests() {
     t.pass("compilation_tests/init_function.rs");
     t.pass("compilation_tests/init_ignore_state.rs");
     t.pass("compilation_tests/no_default.rs");
+    // TODO: unignore upon resolution of https://github.com/near/near-sdk-rs/issues/1211
+    // t.pass("compilation_tests/lifetime_method_result.rs");
     t.pass("compilation_tests/lifetime_method.rs");
     t.pass("compilation_tests/cond_compilation.rs");
     t.compile_fail("compilation_tests/payable_view.rs");
@@ -21,13 +23,21 @@ fn compilation_tests() {
     t.pass("compilation_tests/function_error.rs");
     t.pass("compilation_tests/enum_near_bindgen.rs");
     t.pass("compilation_tests/schema_derive.rs");
-    t.compile_fail("compilation_tests/schema_derive_invalids.rs");
+
+    if rustversion::cfg!(since(1.80)) && std::env::consts::OS == "linux" {
+        // The compilation error output has slightly changed in 1.7x and 1.8x and between platforms,
+        // so we snapshoted this single version
+        t.compile_fail("compilation_tests/schema_derive_invalids.rs");
+    }
     t.compile_fail("compilation_tests/generic_function.rs");
     t.compile_fail("compilation_tests/generic_const_function.rs");
     t.pass("compilation_tests/self_support.rs");
-    // The following couple tests should be activated before releasing 5.0
-    // See: https://github.com/near/near-sdk-rs/issues/1005
-    //
-    // t.compile_fail("compilation_tests/self_forbidden_in_non_init_fn_return.rs");
-    // t.compile_fail("compilation_tests/self_forbidden_in_non_init_fn_arg.rs");
+    t.pass("compilation_tests/private_init_method.rs");
+    t.compile_fail("compilation_tests/self_forbidden_in_non_init_fn_return.rs");
+    t.compile_fail("compilation_tests/self_forbidden_in_non_init_fn_arg.rs");
+    t.pass("compilation_tests/handle_result_alias.rs");
+    t.pass("compilation_tests/contract_metadata.rs");
+    t.compile_fail("compilation_tests/contract_metadata_fn_name.rs");
+    t.pass("compilation_tests/contract_metadata_bindgen.rs");
+    t.pass("compilation_tests/types.rs");
 }

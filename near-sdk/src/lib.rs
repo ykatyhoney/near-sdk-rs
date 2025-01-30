@@ -1,14 +1,107 @@
+//! # `near-sdk`
+//!
+//! `near-sdk` is a Rust toolkit for developing smart contracts on the [NEAR blockchain](https://near.org).  
+//! It provides abstractions, macros, and utilities to make building robust and secure contracts easy.
+//! More information on how to develop smart contracts can be found in the [NEAR documentation](https://docs.near.org/build/smart-contracts/what-is).
+//! With near-sdk you can create DeFi applications, NFTs and marketplaces, DAOs, gaming and metaverse apps, and much more.
+//!
+//! ## Features
+//!
+//! - **State Management:** Simplified handling of contract state with serialization via [Borsh](https://borsh.io) or JSON.
+//! - **Initialization methods** We can define an initialization method that can be used to initialize the state of the contract. #\[init\] macro verifies that the contract has not been initialized yet (the contract state doesn't exist) and will panic otherwise.
+//! - **Payable methods** We can allow methods to accept token transfer together with the function call with #\[payable\] macro.
+//! - **Private methods** #\[private\] macro makes it possible to define private methods that can't be called from the outside of the contract.
+//! - **Cross-Contract Calls:** Support for asynchronous interactions between contracts.
+//! - **Unit Testing:** Built-in support for testing contracts in a Rust environment.
+//! - **WASM Compilation:** Compile Rust code to WebAssembly (WASM) for execution on the NEAR runtime.
+//!
+//! ## Quick Start
+//!
+//! Add `near-sdk` to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! near-sdk = "5.6.0"
+//! ```
+//!
+//! ### Example: Counter Smart Contract
+//!
+//! Below is an example of a simple counter contract that increments and retrieves a value:
+//!
+//! ```rust
+//! use near_sdk::{env, near};
+//!
+//! #[near(contract_state)]
+//! #[derive(Default)]
+//! pub struct Counter {
+//!     value: i32,
+//! }
+//!
+//! #[near]
+//! impl Counter {
+//!     /// Increment the counter by one.
+//!     pub fn increment(&mut self) {
+//!         self.value += 1;
+//!         env::log_str(&format!("Counter incremented to: {}", self.value));
+//!     }
+//!
+//!     /// Get the current value of the counter.
+//!     pub fn get(&self) -> i32 {
+//!         self.value
+//!     }
+//! }
+//! ```
+//!
+//! ### Compiling to WASM
+//!
+//! Install cargo near in case if you don't have it:
+//! ```bash
+//! cargo install --locked cargo-near
+//! ```
+//!
+//! Build your contract for the NEAR blockchain:
+//!
+//! ```bash
+//! cargo near build
+//! ```
+//!
+//! ### Running Unit Tests
+//!
+//! Use the following testing setup:
+//!
+//! ```rust
+//! #[cfg(test)]
+//! mod tests {
+//!     use super::*;
+//!
+//!     #[test]
+//!     fn increment_works() {
+//!         let mut counter = Counter::default();
+//!         counter.increment();
+//!         assert_eq!(counter.get(), 1);
+//!     }
+//! }
+//! ```
+//!
+//! Run tests using:
+//! ```bash
+//! cargo test
+//! ```
+
 //* Clippy is giving false positive warnings for this in 1.57 version. Remove this if fixed.
 //* https://github.com/rust-lang/rust-clippy/issues/8091
 #![allow(clippy::redundant_closure)]
+// We want to enable all clippy lints, but some of them generate false positives.
+#![allow(clippy::missing_const_for_fn, clippy::redundant_pub_crate)]
+#![allow(clippy::multiple_bound_locations)]
+#![allow(clippy::needless_lifetimes)]
 
 #[cfg(test)]
 extern crate quickcheck;
 
-#[cfg(all(feature = "unstable", feature = "abi"))]
-pub use near_sdk_macros::NearSchema;
 pub use near_sdk_macros::{
-    ext_contract, near_bindgen, BorshStorageKey, EventMetadata, FunctionError, PanicOnDefault,
+    ext_contract, near, near_bindgen, BorshStorageKey, EventMetadata, FunctionError, NearSchema,
+    PanicOnDefault,
 };
 
 pub mod store;
@@ -34,21 +127,24 @@ pub mod json_types;
 mod types;
 pub use crate::types::*;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "unit-testing"))]
+#[cfg(all(feature = "unit-testing", not(target_arch = "wasm32")))]
 pub use environment::mock;
-#[cfg(all(not(target_arch = "wasm32"), feature = "unit-testing"))]
+#[cfg(all(feature = "unit-testing", not(target_arch = "wasm32")))]
+pub use environment::mock::test_vm_config;
+#[cfg(all(feature = "unit-testing", not(target_arch = "wasm32")))]
 // Re-export to avoid breakages
 pub use environment::mock::MockedBlockchain;
-#[cfg(all(not(target_arch = "wasm32"), feature = "unit-testing"))]
-pub use near_vm_logic::VMConfig;
-#[cfg(all(not(target_arch = "wasm32"), feature = "unit-testing"))]
+#[cfg(all(feature = "unit-testing", not(target_arch = "wasm32")))]
 pub use test_utils::context::VMContext;
 
 pub mod utils;
 pub use crate::utils::storage_key_impl::IntoStorageKey;
 pub use crate::utils::*;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "unit-testing"))]
+#[cfg(feature = "__macro-docs")]
+pub mod near;
+
+#[cfg(all(feature = "unit-testing", not(target_arch = "wasm32")))]
 pub mod test_utils;
 
 // Set up global allocator by default if custom-allocator feature is not set in wasm32 architecture.
@@ -58,17 +154,10 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 // Exporting common crates
 
-#[doc(hidden)]
-pub use borsh;
-
-#[doc(hidden)]
 pub use base64;
-
-#[doc(hidden)]
+pub use borsh;
 pub use bs58;
-
-#[doc(hidden)]
+#[cfg(feature = "abi")]
+pub use schemars;
 pub use serde;
-
-#[doc(hidden)]
 pub use serde_json;

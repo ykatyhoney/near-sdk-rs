@@ -1,12 +1,14 @@
+#[cfg(feature = "abi")]
 use borsh::BorshSchema;
 use std::cell::RefCell;
-use std::collections::HashMap;
+#[cfg(feature = "abi")]
+use std::collections::BTreeMap;
 use std::io::{Error, Write};
 use std::num::NonZeroU128;
 use std::rc::Rc;
 
 use crate::env::migrate_to_allowance;
-use crate::{AccountId, Balance, Gas, GasWeight, PromiseIndex, PublicKey};
+use crate::{AccountId, Gas, GasWeight, NearToken, PromiseIndex, PublicKey};
 
 /// Allow an access key to spend either an unlimited or limited amount of gas
 // This wrapper prevents incorrect construction
@@ -22,8 +24,8 @@ impl Allowance {
     }
 
     /// This will return an None if you try to pass a zero value balance
-    pub fn limited(balance: Balance) -> Option<Allowance> {
-        NonZeroU128::new(balance).map(Allowance::Limited)
+    pub fn limited(balance: NearToken) -> Option<Allowance> {
+        NonZeroU128::new(balance.as_yoctonear()).map(Allowance::Limited)
     }
 }
 
@@ -35,21 +37,21 @@ enum PromiseAction {
     FunctionCall {
         function_name: String,
         arguments: Vec<u8>,
-        amount: Balance,
+        amount: NearToken,
         gas: Gas,
     },
     FunctionCallWeight {
         function_name: String,
         arguments: Vec<u8>,
-        amount: Balance,
+        amount: NearToken,
         gas: Gas,
         weight: GasWeight,
     },
     Transfer {
-        amount: Balance,
+        amount: NearToken,
     },
     Stake {
-        amount: Balance,
+        amount: NearToken,
         public_key: PublicKey,
     },
     AddFullAccessKey {
@@ -190,18 +192,17 @@ impl PromiseJoint {
 ///   execution of method `ContractB::b` of `bob_near` account, and the return value of `ContractA::a`
 ///   will be what `ContractB::b` returned.
 /// ```no_run
-/// # use near_sdk::{ext_contract, near_bindgen, Promise, Gas};
-/// # use borsh::{BorshDeserialize, BorshSerialize};
+/// # use near_sdk::{ext_contract, near, Promise, Gas};
 /// #[ext_contract]
 /// pub trait ContractB {
 ///     fn b(&mut self);
 /// }
 ///
-/// #[near_bindgen]
-/// #[derive(Default, BorshDeserialize, BorshSerialize)]
+/// #[near(contract_state)]
+/// #[derive(Default)]
 /// struct ContractA {}
 ///
-/// #[near_bindgen]
+/// #[near]
 /// impl ContractA {
 ///     pub fn a(&self) -> Promise {
 ///         contract_b::ext("bob_near".parse().unwrap()).b()
@@ -213,23 +214,26 @@ impl PromiseJoint {
 ///   schedules a transaction that creates an account, transfers tokens, and assigns a public key:
 ///
 /// ```no_run
-/// # use near_sdk::{Promise, env, test_utils::VMContextBuilder, testing_env};
+/// # use near_sdk::{Promise, env, test_utils::VMContextBuilder, testing_env, Gas, NearToken};
 /// # testing_env!(VMContextBuilder::new().signer_account_id("bob_near".parse().unwrap())
-/// #               .account_balance(1000).prepaid_gas(1_000_000.into()).build());
+/// #               .account_balance(NearToken::from_yoctonear(1000)).prepaid_gas(Gas::from_gas(1_000_000)).build());
 /// Promise::new("bob_near".parse().unwrap())
 ///   .create_account()
-///   .transfer(1000)
+///   .transfer(NearToken::from_yoctonear(1000))
 ///   .add_full_access_key(env::signer_account_pk());
 /// ```
+///
+/// More information about promises in [NEAR documentation](https://docs.near.org/build/smart-contracts/anatomy/crosscontract#promises)
 pub struct Promise {
     subtype: PromiseSubtype,
     should_return: RefCell<bool>,
 }
 
 /// Until we implement strongly typed promises we serialize them as unit struct.
+#[cfg(feature = "abi")]
 impl BorshSchema for Promise {
     fn add_definitions_recursively(
-        definitions: &mut HashMap<borsh::schema::Declaration, borsh::schema::Definition>,
+        definitions: &mut BTreeMap<borsh::schema::Declaration, borsh::schema::Definition>,
     ) {
         <()>::add_definitions_recursively(definitions);
     }
@@ -247,6 +251,7 @@ enum PromiseSubtype {
 
 impl Promise {
     /// Create a promise that acts on the given account.
+    /// Uses low-level [`crate::env::promise_batch_create`]
     pub fn new(account_id: AccountId) -> Self {
         Self {
             subtype: PromiseSubtype::Single(Rc::new(PromiseSingle {
@@ -270,21 +275,24 @@ impl Promise {
     }
 
     /// Create account on which this promise acts.
+    /// Uses low-level [`crate::env::promise_batch_action_create_account`]
     pub fn create_account(self) -> Self {
         self.add_action(PromiseAction::CreateAccount)
     }
 
     /// Deploy a smart contract to the account on which this promise acts.
+    /// Uses low-level [`crate::env::promise_batch_action_deploy_contract`]
     pub fn deploy_contract(self, code: Vec<u8>) -> Self {
         self.add_action(PromiseAction::DeployContract { code })
     }
 
     /// A low-level interface for making a function call to the account that this promise acts on.
+    /// Uses low-level [`crate::env::promise_batch_action_function_call`]
     pub fn function_call(
         self,
         function_name: String,
         arguments: Vec<u8>,
-        amount: Balance,
+        amount: NearToken,
         gas: Gas,
     ) -> Self {
         self.add_action(PromiseAction::FunctionCall { function_name, arguments, amount, gas })
@@ -293,11 +301,12 @@ impl Promise {
     /// A low-level interface for making a function call to the account that this promise acts on.
     /// unlike [`Promise::function_call`], this function accepts a weight to use relative unused gas
     /// on this function call at the end of the scheduling method execution.
+    /// Uses low-level [`crate::env::promise_batch_action_function_call_weight`]
     pub fn function_call_weight(
         self,
         function_name: String,
         arguments: Vec<u8>,
-        amount: Balance,
+        amount: NearToken,
         gas: Gas,
         weight: GasWeight,
     ) -> Self {
@@ -311,21 +320,25 @@ impl Promise {
     }
 
     /// Transfer tokens to the account that this promise acts on.
-    pub fn transfer(self, amount: Balance) -> Self {
+    /// Uses low-level [`crate::env::promise_batch_action_transfer`]
+    pub fn transfer(self, amount: NearToken) -> Self {
         self.add_action(PromiseAction::Transfer { amount })
     }
 
     /// Stake the account for the given amount of tokens using the given public key.
-    pub fn stake(self, amount: Balance, public_key: PublicKey) -> Self {
+    /// Uses low-level [`crate::env::promise_batch_action_stake`]
+    pub fn stake(self, amount: NearToken, public_key: PublicKey) -> Self {
         self.add_action(PromiseAction::Stake { amount, public_key })
     }
 
     /// Add full access key to the given account.
+    /// Uses low-level [`crate::env::promise_batch_action_add_key_with_full_access`]
     pub fn add_full_access_key(self, public_key: PublicKey) -> Self {
         self.add_full_access_key_with_nonce(public_key, 0)
     }
 
     /// Add full access key to the given account with a provided nonce.
+    /// Uses low-level [`crate::env::promise_batch_action_add_key_with_full_access`]
     pub fn add_full_access_key_with_nonce(self, public_key: PublicKey, nonce: u64) -> Self {
         self.add_action(PromiseAction::AddFullAccessKey { public_key, nonce })
     }
@@ -333,6 +346,7 @@ impl Promise {
     /// Add an access key that is restricted to only calling a smart contract on some account using
     /// only a restricted set of methods. Here `function_names` is a comma separated list of methods,
     /// e.g. `"method_a,method_b".to_string()`.
+    /// Uses low-level [`crate::env::promise_batch_action_add_key_with_function_call`]
     pub fn add_access_key_allowance(
         self,
         public_key: PublicKey,
@@ -353,7 +367,7 @@ impl Promise {
     pub fn add_access_key(
         self,
         public_key: PublicKey,
-        allowance: Balance,
+        allowance: NearToken,
         receiver_id: AccountId,
         function_names: String,
     ) -> Self {
@@ -362,6 +376,7 @@ impl Promise {
     }
 
     /// Add an access key with a provided nonce.
+    /// Uses low-level [`crate::env::promise_batch_action_add_key_with_function_call`]
     pub fn add_access_key_allowance_with_nonce(
         self,
         public_key: PublicKey,
@@ -383,7 +398,7 @@ impl Promise {
     pub fn add_access_key_with_nonce(
         self,
         public_key: PublicKey,
-        allowance: Balance,
+        allowance: NearToken,
         receiver_id: AccountId,
         function_names: String,
         nonce: u64,
@@ -399,11 +414,13 @@ impl Promise {
     }
 
     /// Delete access key from the given account.
+    /// Uses low-level [`crate::env::promise_batch_action_delete_key`]
     pub fn delete_key(self, public_key: PublicKey) -> Self {
         self.add_action(PromiseAction::DeleteKey { public_key })
     }
 
     /// Delete the given account.
+    /// Uses low-level [`crate::env::promise_batch_action_delete_account`]
     pub fn delete_account(self, beneficiary_id: AccountId) -> Self {
         self.add_action(PromiseAction::DeleteAccount { beneficiary_id })
     }
@@ -421,6 +438,7 @@ impl Promise {
     /// let p3 = p1.and(p2);
     /// // p3.create_account();
     /// ```
+    /// Uses low-level [`crate::env::promise_and`]
     pub fn and(self, other: Promise) -> Promise {
         Promise {
             subtype: PromiseSubtype::Joint(Rc::new(PromiseJoint {
@@ -445,6 +463,7 @@ impl Promise {
     /// let p4 = Promise::new("eva_near".parse().unwrap()).create_account();
     /// p1.then(p2).and(p3).then(p4);
     /// ```
+    /// Uses low-level [`crate::env::promise_batch_then`]
     pub fn then(self, mut other: Promise) -> Promise {
         match &mut other.subtype {
             PromiseSubtype::Single(x) => {
@@ -466,18 +485,17 @@ impl Promise {
     ///
     /// In the below code `a1` and `a2` functions are equivalent.
     /// ```
-    /// # use near_sdk::{ext_contract, Gas, near_bindgen, Promise};
-    /// # use borsh::{BorshDeserialize, BorshSerialize};
+    /// # use near_sdk::{ext_contract, Gas, near, Promise};
     /// #[ext_contract]
     /// pub trait ContractB {
     ///     fn b(&mut self);
     /// }
     ///
-    /// #[near_bindgen]
-    /// #[derive(Default, BorshDeserialize, BorshSerialize)]
+    /// #[near(contract_state)]
+    /// #[derive(Default)]
     /// struct ContractA {}
     ///
-    /// #[near_bindgen]
+    /// #[near]
     /// impl ContractA {
     ///     pub fn a1(&self) {
     ///        contract_b::ext("bob_near".parse().unwrap()).b().as_return();
@@ -488,6 +506,7 @@ impl Promise {
     ///     }
     /// }
     /// ```
+    /// Makes the promise to use low-level [`crate::env::promise_return`].
     #[allow(clippy::wrong_self_convention)]
     pub fn as_return(self) -> Self {
         *self.should_return.borrow_mut() = true;
@@ -549,7 +568,7 @@ impl schemars::JsonSchema for Promise {
 /// or `PromiseOrValue::Value` to specify which one should be returned.
 /// # Example
 /// ```no_run
-/// # use near_sdk::{ext_contract, near_bindgen, Gas, PromiseOrValue};
+/// # use near_sdk::{ext_contract, near, Gas, PromiseOrValue};
 /// #[ext_contract]
 /// pub trait ContractA {
 ///     fn a(&mut self);
@@ -569,12 +588,13 @@ pub enum PromiseOrValue<T> {
     Value(T),
 }
 
+#[cfg(feature = "abi")]
 impl<T> BorshSchema for PromiseOrValue<T>
 where
     T: BorshSchema,
 {
     fn add_definitions_recursively(
-        definitions: &mut HashMap<borsh::schema::Declaration, borsh::schema::Definition>,
+        definitions: &mut BTreeMap<borsh::schema::Declaration, borsh::schema::Definition>,
     ) {
         T::add_definitions_recursively(definitions);
     }
@@ -615,11 +635,11 @@ impl<T: schemars::JsonSchema> schemars::JsonSchema for PromiseOrValue<T> {
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
-    use crate::mock::VmAction;
+    use crate::mock::MockAction;
     use crate::test_utils::get_created_receipts;
     use crate::test_utils::test_env::{alice, bob};
     use crate::{
-        test_utils::VMContextBuilder, testing_env, AccountId, Allowance, Balance, Promise,
+        test_utils::VMContextBuilder, testing_env, AccountId, Allowance, NearToken, Promise,
         PublicKey,
     };
 
@@ -627,17 +647,18 @@ mod tests {
         "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp".parse().unwrap()
     }
 
-    fn get_actions() -> std::vec::IntoIter<VmAction> {
+    fn get_actions() -> std::vec::IntoIter<MockAction> {
         let receipts = get_created_receipts();
         let first_receipt = receipts.into_iter().next().unwrap();
         first_receipt.actions.into_iter()
     }
 
     fn has_add_key_with_full_access(public_key: PublicKey, nonce: Option<u64>) -> bool {
+        let public_key = near_crypto::PublicKey::try_from(public_key).unwrap();
         get_actions().any(|el| {
             matches!(
                 el,
-                VmAction::AddKeyWithFullAccess { public_key: p, nonce: n }
+                MockAction::AddKeyWithFullAccess { public_key: p, nonce: n, receipt_index: _, }
                 if p == public_key
                     && (nonce.is_none() || Some(n) == nonce)
             )
@@ -651,20 +672,22 @@ mod tests {
         function_names: String,
         nonce: Option<u64>,
     ) -> bool {
+        let public_key = near_crypto::PublicKey::try_from(public_key).unwrap();
         get_actions().any(|el| {
             matches!(
                 el,
-                VmAction::AddKeyWithFunctionCall {
+                MockAction::AddKeyWithFunctionCall {
                     public_key: p,
                     allowance: a,
                     receiver_id: r,
-                    function_names: f,
-                    nonce: n
+                    method_names,
+                    nonce: n,
+                    receipt_index: _,
                 }
                 if p == public_key
-                    && a.unwrap() == allowance
+                    && a.unwrap() == NearToken::from_yoctonear(allowance)
                     && r == receiver_id
-                    && f == function_names.split(',').collect::<Vec<_>>()
+                    && method_names.clone() == function_names.split(',').collect::<Vec<_>>()
                     && (nonce.is_none() || Some(n) == nonce)
             )
         })
@@ -733,7 +756,7 @@ mod tests {
         testing_env!(VMContextBuilder::new().signer_account_id(alice()).build());
 
         let public_key: PublicKey = pk();
-        let allowance: Balance = 100;
+        let allowance = NearToken::from_yoctonear(100);
         let receiver_id = bob();
         let function_names = "method_a,method_b".to_string();
 
@@ -749,7 +772,7 @@ mod tests {
 
         assert!(has_add_key_with_function_call(
             public_key,
-            allowance,
+            allowance.as_yoctonear(),
             receiver_id,
             function_names,
             None
@@ -790,7 +813,7 @@ mod tests {
         testing_env!(VMContextBuilder::new().signer_account_id(alice()).build());
 
         let public_key: PublicKey = pk();
-        let allowance = 100;
+        let allowance = NearToken::from_yoctonear(100);
         let receiver_id = bob();
         let function_names = "method_a,method_b".to_string();
         let nonce = 42;
@@ -808,7 +831,7 @@ mod tests {
 
         assert!(has_add_key_with_function_call(
             public_key,
-            allowance,
+            allowance.as_yoctonear(),
             receiver_id,
             function_names,
             Some(nonce)
@@ -827,11 +850,12 @@ mod tests {
                 .add_full_access_key(public_key.clone())
                 .delete_key(public_key.clone());
         }
+        let public_key = near_crypto::PublicKey::try_from(public_key).unwrap();
 
         let has_action = get_actions().any(|el| {
             matches!(
                 el,
-                VmAction::DeleteKey { public_key: p } if p == public_key
+                MockAction::DeleteKey { public_key: p , receipt_index: _, } if p == public_key
             )
         });
         assert!(has_action);

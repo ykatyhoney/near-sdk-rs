@@ -1,4 +1,4 @@
-use super::{InitAttr, MethodKind, ReturnKind, SerializerAttr};
+use super::{HandleResultAttr, InitAttr, MethodKind, ReturnKind, SerializerAttr};
 use crate::core_impl::{utils, CallMethod, InitMethod, Returns, SerializerType, ViewMethod};
 use quote::ToTokens;
 use syn::{spanned::Spanned, Attribute, Error, FnArg, Receiver, ReturnType, Signature, Type};
@@ -11,12 +11,28 @@ pub struct Visitor {
 }
 
 struct ParsedData {
-    handles_result: bool,
+    handles_result: ResultHandling,
     is_payable: bool,
     is_private: bool,
     ignores_state: bool,
     result_serializer: SerializerType,
     receiver: Option<Receiver>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ResultHandling {
+    // No result handling.
+    None,
+    // Attempt to handle the `Result` without performing a heuristic type check.
+    NoCheck,
+    // Attempt to handle the `Result` with a heuristic type check.
+    Check,
+}
+
+impl Default for ResultHandling {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 impl Default for ParsedData {
@@ -87,23 +103,8 @@ impl Visitor {
     }
 
     pub fn visit_private_attr(&mut self, _attr: &Attribute) -> syn::Result<()> {
-        use VisitorKind::*;
-
-        match self.kind {
-            Call | View => {
-                self.parsed_data.is_private = true;
-                Ok(())
-            }
-            Init => {
-                // TODO: return an error instead in 5.0
-                // see https://github.com/near/near-sdk-rs/issues/1040
-                println!("near_bindgen: private init functions will be disallowed in 5.0");
-                Ok(())
-
-                // let message = format!("{} function can't be private.", self.kind);
-                // Err(Error::new(attr.span(), message))
-            }
-        }
+        self.parsed_data.is_private = true;
+        Ok(())
     }
 
     pub fn visit_result_serializer_attr(
@@ -125,8 +126,9 @@ impl Visitor {
         }
     }
 
-    pub fn visit_handle_result_attr(&mut self) {
-        self.parsed_data.handles_result = true
+    pub fn visit_handle_result_attr(&mut self, params: &HandleResultAttr) {
+        self.parsed_data.handles_result =
+            if params.check { ResultHandling::NoCheck } else { ResultHandling::Check }
     }
 
     pub fn visit_receiver(&mut self, receiver: &Receiver) -> syn::Result<()> {
@@ -192,7 +194,7 @@ impl Visitor {
 }
 
 fn is_init(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|a| a.path.to_token_stream().to_string() == "init")
+    attributes.iter().any(|a| a.path().to_token_stream().to_string() == "init")
 }
 
 fn is_view(sig: &Signature) -> bool {
@@ -207,26 +209,29 @@ fn is_view(sig: &Signature) -> bool {
     }
 }
 
-fn parse_return_kind(typ: &Type, handles_result: bool) -> syn::Result<ReturnKind> {
-    if handles_result {
-        if let Some(ok_type) = utils::extract_ok_type(typ) {
-            Ok(ReturnKind::HandlesResult { ok_type: ok_type.clone() })
-        } else {
-            Err(Error::new(
-                typ.span(),
-                "Function marked with #[handle_result] should return Result<T, E> (where E implements FunctionError).",
-            ))
+fn parse_return_kind(typ: &Type, handles_result: ResultHandling) -> syn::Result<ReturnKind> {
+    match handles_result {
+        ResultHandling::NoCheck => Ok(ReturnKind::HandlesResult(typ.clone())),
+        ResultHandling::Check => {
+            if !utils::type_is_result(typ) {
+                Err(Error::new(typ.span(), "Function marked with #[handle_result] should return Result<T, E> (where E implements FunctionError). If you're trying to use a type alias for `Result`, try `#[handle_result(aliased)]`."))
+            } else {
+                Ok(ReturnKind::HandlesResult(typ.clone()))
+            }
         }
-    } else if utils::type_is_result(typ) {
-        Err(Error::new(
-            typ.span(),
-            "Serializing Result<T, E> has been deprecated. Consider marking your method \
-                with #[handle_result] if the second generic represents a panicable error or \
+        ResultHandling::None => {
+            if utils::type_is_result(typ) {
+                Err(Error::new(
+                    typ.span(),
+                    "Serializing Result<T, E> has been deprecated. Consider marking your method \
+                    with #[handle_result] if the second generic represents a panicable error or \
                 replacing Result with another two type sum enum otherwise. If you really want \
                 to keep the legacy behavior, mark the method with #[handle_result] and make \
                 it return Result<Result<T, E>, near_sdk::Abort>.",
-        ))
-    } else {
-        Ok(ReturnKind::General(typ.clone()))
+                ))
+            } else {
+                Ok(ReturnKind::General(typ.clone()))
+            }
+        }
     }
 }

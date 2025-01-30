@@ -1,8 +1,6 @@
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::{env, near_bindgen};
+use near_sdk::{env, near};
 
-#[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize)]
+#[near(contract_state)]
 pub struct TestContract {}
 
 impl Default for TestContract {
@@ -11,7 +9,7 @@ impl Default for TestContract {
     }
 }
 
-#[near_bindgen]
+#[near]
 impl TestContract {
     #[init]
     pub fn new() -> Self {
@@ -20,7 +18,7 @@ impl TestContract {
 
     #[init(ignore_state)]
     pub fn migrate_state() -> Self {
-        #[derive(BorshDeserialize)]
+        #[near]
         struct OldContract {
             // ...
         }
@@ -39,11 +37,32 @@ impl TestContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use near_abi::AbiRoot;
+    use near_sdk::serde_json;
 
     #[test]
     #[should_panic(expected = "PANIC!")]
     fn test_panic() {
         let mut contract = TestContract::new();
         contract.test_panic_macro();
+    }
+
+    // this only tests that contract can be built with ABI and responds to __contract_abi
+    // view call
+    #[tokio::test]
+    async fn embedded_abi_test() -> anyhow::Result<()> {
+        let wasm = near_workspaces::compile_project("./").await?;
+        let worker = near_workspaces::sandbox().await?;
+        let contract = worker.dev_deploy(&wasm).await?;
+
+        let res = contract.view("__contract_abi").await?;
+
+        let abi_root =
+            serde_json::from_slice::<AbiRoot>(&zstd::decode_all(&res.result[..])?)?;
+
+        assert_eq!(abi_root.schema_version, "0.4.0");
+        assert_eq!(abi_root.metadata.name, Some("test-contract".to_string()));
+
+        Ok(())
     }
 }
